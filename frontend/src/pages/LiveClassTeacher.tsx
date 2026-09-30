@@ -3,6 +3,8 @@ import { Link, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../stores/authStore'
 import api from '../lib/api'
 import { LiveSyncManager, LiveMessage } from '../lib/liveSync'
+import teacherSpeakingSrc from '../assets/teacher_speaking.jpg'
+import teacherListeningSrc from '../assets/teacher_listening.jpg'
 
 interface StudentInfo {
   name: string
@@ -76,11 +78,11 @@ export default function LiveClassTeacher() {
   // Preload studio teacher presenter frames
   useEffect(() => {
     const s = new Image()
-    s.src = '/teacher_speaking.jpg'
+    s.src = teacherSpeakingSrc
     speakingImgRef.current = s
 
     const l = new Image()
-    l.src = '/teacher_listening.jpg'
+    l.src = teacherListeningSrc
     listeningImgRef.current = l
   }, [])
 
