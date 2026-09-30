@@ -7,7 +7,7 @@ export interface LiveMessage {
   senderId: string
   senderName: string
   senderRole: 'teacher' | 'student'
-  type: 'teacher_speech' | 'student_doubt' | 'student_join' | 'teacher_answer' | 'class_ended'
+  type: 'teacher_speech' | 'student_doubt' | 'student_join' | 'teacher_answer' | 'class_ended' | 'teacher_video_frame'
   payload: any
   timestamp: number
 }
@@ -251,11 +251,16 @@ export class LiveSyncManager {
     this.processedIds.add(msg.id)
     this.lastTimestamp = msg.timestamp
 
-    // 1. Post to local BroadcastChannel
+    // 1. Post to local BroadcastChannel (handles in-memory frame transfer instantly)
     try {
       this.broadcastChannel?.postMessage(msg)
     } catch (e) {
       // ignore
+    }
+
+    // Video frames are high frequency (10-15 fps) and should NOT pollute localStorage or serverless logs
+    if (type === 'teacher_video_frame') {
+      return msg
     }
 
     // 2. Post to localStorage event and persistent history

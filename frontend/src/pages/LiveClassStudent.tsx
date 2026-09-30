@@ -64,6 +64,9 @@ export default function LiveClassStudent() {
   const volume = 1.0
   const [isPlayingAudio, setIsPlayingAudio] = useState(false)
 
+  // Live incoming teacher video frame from broadcast
+  const [incomingTeacherFrame, setIncomingTeacherFrame] = useState<string | null>(null)
+
   // Real-time caption state
   const [captions, setCaptions] = useState<CaptionItem[]>([
     {
@@ -169,6 +172,10 @@ export default function LiveClassStudent() {
           setCurrentCaption(item)
           if (audioEnabled) {
             speakTranslatedText(translatedAnswer, selectedLanguage)
+          }
+        } else if (msg.type === 'teacher_video_frame') {
+          if (msg.payload?.frame) {
+            setIncomingTeacherFrame(msg.payload.frame)
           }
         } else if (msg.type === 'class_ended') {
           setEndedLectureId(msg.payload?.lecture_id || 1)
@@ -541,6 +548,7 @@ export default function LiveClassStudent() {
                 isDelayEnabled={isDelayEnabled}
                 onToggleDelay={(enabled) => setIsDelayEnabled(enabled)}
                 onDelayChange={(ms) => setSyncDelayMs(ms)}
+                incomingTeacherFrame={incomingTeacherFrame}
               />
 
               {/* Floating Student Video Tile (Self View - PiP like Google Meet) */}

@@ -61,12 +61,60 @@ export default function LiveClassTeacher() {
   // Audio In state
   const [asrEngine, setAsrEngine] = useState<'browser' | 'server'>('browser')
   const [audioLevel, setAudioLevel] = useState(0)
+  const [isWebcamActive, setIsWebcamActive] = useState(false)
 
   const recognitionRef = useRef<any>(null)
   const liveSyncRef = useRef<LiveSyncManager | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
   const animFrameRef = useRef<number | null>(null)
   const teacherCanvasRef = useRef<HTMLCanvasElement | null>(null)
+  const teacherVideoRef = useRef<HTMLVideoElement | null>(null)
+  const lastBroadcastRef = useRef<number>(0)
+  const speakingImgRef = useRef<HTMLImageElement | null>(null)
+  const listeningImgRef = useRef<HTMLImageElement | null>(null)
+
+  // Preload studio teacher presenter frames
+  useEffect(() => {
+    const s = new Image()
+    s.src = '/teacher_speaking.jpg'
+    speakingImgRef.current = s
+
+    const l = new Image()
+    l.src = '/teacher_listening.jpg'
+    listeningImgRef.current = l
+  }, [])
+
+  // Camera stream capture
+  useEffect(() => {
+    let stream: MediaStream | null = null
+    async function initCam() {
+      if (cameraOn && inRoom) {
+        try {
+          if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+            stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 360 }, audio: false })
+            if (teacherVideoRef.current) {
+              teacherVideoRef.current.srcObject = stream
+              teacherVideoRef.current.play().catch(() => {})
+              setIsWebcamActive(true)
+            }
+          }
+        } catch {
+          setIsWebcamActive(false)
+        }
+      } else {
+        if (teacherVideoRef.current && teacherVideoRef.current.srcObject) {
+          const s = teacherVideoRef.current.srcObject as MediaStream
+          s.getTracks().forEach((t) => t.stop())
+          teacherVideoRef.current.srcObject = null
+        }
+        setIsWebcamActive(false)
+      }
+    }
+    initCam()
+    return () => {
+      if (stream) stream.getTracks().forEach((t) => t.stop())
+    }
+  }, [cameraOn, inRoom])
 
   // Setup Web Speech recognition if supported
   useEffect(() => {
@@ -101,7 +149,7 @@ export default function LiveClassTeacher() {
     }
   }, [isListening, asrEngine])
 
-  // Canvas visualizer for teacher presentation
+  // Canvas visualizer for teacher presentation & live frame broadcast
   useEffect(() => {
     if (!inRoom) return
     const canvas = teacherCanvasRef.current
@@ -116,57 +164,61 @@ export default function LiveClassTeacher() {
       if (!active) return
       const w = canvas.width
       const h = canvas.height
-
-      // Background
-      const grad = ctx.createLinearGradient(0, 0, w, h)
-      grad.addColorStop(0, '#090d16')
-      grad.addColorStop(1, '#1e293b')
-      ctx.fillStyle = grad
-      ctx.fillRect(0, 0, w, h)
-
-      // Interactive whiteboard grid
-      ctx.strokeStyle = '#1e293b'
-      ctx.lineWidth = 1
-      for (let x = 0; x < w; x += 40) {
-        ctx.beginPath()
-        ctx.moveTo(x, 0)
-        ctx.lineTo(x, h)
-        ctx.stroke()
-      }
-      for (let y = 0; y < h; y += 40) {
-        ctx.beginPath()
-        ctx.moveTo(0, y)
-        ctx.lineTo(w, y)
-        ctx.stroke()
-      }
-
-      // Teacher Avatar Presentation Box
-      ctx.fillStyle = '#38bdf8'
-      ctx.font = 'bold 22px Inter, sans-serif'
-      ctx.fillText(`👨‍🏫 ${user?.full_name || 'Dr. Ramesh Sharma'} (Host Teacher)`, 32, 48)
-
-      ctx.fillStyle = '#94a3b8'
-      ctx.font = '13px Inter, sans-serif'
-      ctx.fillText(`Broadcasting in English • Live Dubbing Active for ${students.length} Students`, 32, 72)
-
-      // Animated Voice Wave
       wave += 0.08
-      ctx.strokeStyle = isListening ? '#4ade80' : '#64748b'
-      ctx.lineWidth = 3
-      ctx.beginPath()
-      const midY = h / 2
-      for (let x = 32; x < w - 32; x += 6) {
-        const amp = isListening ? (audioLevel > 5 ? 30 : 12) : 4
-        const y = midY + Math.sin(x * 0.04 + wave) * amp
-        if (x === 32) ctx.moveTo(x, y)
-        else ctx.lineTo(x, y)
-      }
-      ctx.stroke()
+      const now = Date.now()
 
-      // Current Topic Banner
-      ctx.fillStyle = '#f8fafc'
-      ctx.font = 'bold 16px Inter, sans-serif'
-      ctx.fillText(`📚 Lesson: ${title}`, 32, h - 40)
+      const isSpeaking = isListening || audioLevel > 5
+
+      if (isWebcamActive && teacherVideoRef.current && teacherVideoRef.current.readyState >= 2) {
+        ctx.drawImage(teacherVideoRef.current, 0, 0, w, h)
+      } else {
+        const sourceImg = isSpeaking ? speakingImgRef.current : listeningImgRef.current
+
+        if (sourceImg && sourceImg.complete && sourceImg.naturalWidth > 0) {
+          const scale = 1.0 + (isSpeaking ? Math.sin(wave) * 0.012 : 0)
+          ctx.save()
+          ctx.translate(w / 2, h / 2)
+          ctx.scale(scale, scale)
+          ctx.drawImage(sourceImg, -w / 2, -h / 2, w, h)
+          ctx.restore()
+        } else {
+          // Background
+          const grad = ctx.createLinearGradient(0, 0, w, h)
+          grad.addColorStop(0, '#090d16')
+          grad.addColorStop(1, '#1e293b')
+          ctx.fillStyle = grad
+          ctx.fillRect(0, 0, w, h)
+        }
+      }
+
+      // Animated Voice Wave overlay on teacher feed
+      if (isSpeaking) {
+        ctx.strokeStyle = '#4ade80'
+        ctx.lineWidth = 3
+        ctx.beginPath()
+        const midY = h - 25
+        for (let x = 20; x < w - 20; x += 6) {
+          const amp = audioLevel > 5 ? 18 : 8
+          const y = midY + Math.sin(x * 0.05 + wave) * amp
+          if (x === 20) ctx.moveTo(x, y)
+          else ctx.lineTo(x, y)
+        }
+        ctx.stroke()
+      }
+
+      // Broadcast video frame to student tabs every 120ms (~8-10 fps)
+      if (now - lastBroadcastRef.current > 120) {
+        lastBroadcastRef.current = now
+        try {
+          const frameData = canvas.toDataURL('image/jpeg', 0.45)
+          liveSyncRef.current?.broadcast('teacher_video_frame', {
+            frame: frameData,
+            timestamp: now,
+          })
+        } catch {
+          // ignore
+        }
+      }
 
       animFrameRef.current = requestAnimationFrame(render)
     }
@@ -177,7 +229,7 @@ export default function LiveClassTeacher() {
       active = false
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current)
     }
-  }, [inRoom, isListening, audioLevel, title, students.length])
+  }, [inRoom, isListening, audioLevel, isWebcamActive])
 
   // Mic capture
   const startAudioCapture = async () => {
@@ -526,6 +578,9 @@ export default function LiveClassTeacher() {
         {/* Left: Host Presentation & Video Canvas */}
         <div className="flex-1 p-3 sm:p-5 flex flex-col min-w-0">
           <div className="relative w-full flex-1 rounded-2xl overflow-hidden bg-slate-900 border border-slate-800/80 shadow-2xl flex flex-col">
+            {/* Hidden Video element for webcam capture */}
+            <video ref={teacherVideoRef} autoPlay playsInline muted className="hidden" />
+
             {/* Whiteboard / Presentation Canvas */}
             <canvas
               ref={teacherCanvasRef}
