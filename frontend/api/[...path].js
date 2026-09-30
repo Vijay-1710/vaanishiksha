@@ -51,6 +51,33 @@ export default function handler(req, res) {
   }
 
   // 2. Live Classroom Real-Time Synchronization Endpoints
+  if (url.includes('/live/rooms/create')) {
+    let body = req.body || {}
+    if (typeof body === 'string') {
+      try { body = JSON.parse(body) } catch (e) {}
+    }
+    const code = (body.room_code || 'LIVE-2026').toUpperCase()
+    const room = {
+      room_code: code,
+      title: body.title || 'Master Live Science: Water Cycle & Rain (जल चक्र)',
+      subject: body.subject || 'General Science',
+      grade_level: body.grade_level || 5,
+      teacher_name: 'Dr. Ramesh Sharma',
+      teacher_id: 101,
+      is_active: true,
+      created_at: new Date().toISOString(),
+    }
+    globalStore.rooms[code] = room
+    return res.status(200).json(room)
+  }
+
+  if (url.match(/\/live\/rooms\/[^/]+\/end/)) {
+    return res.status(200).json({
+      lecture_id: 1,
+      message: 'Classroom archived and converted to permanent lecture with auto-generated worksheet.',
+    })
+  }
+
   if (url.includes('/broadcast')) {
     const codeMatch = url.match(/\/live\/rooms\/([^/]+)\/broadcast/)
     const roomCode = (codeMatch ? codeMatch[1] : 'LIVE-2026').toUpperCase()
@@ -82,6 +109,8 @@ export default function handler(req, res) {
   }
 
   if (url.includes('/live/rooms/active')) {
+    const activeRooms = Object.values(globalStore.rooms).filter(r => r.is_active)
+    if (activeRooms.length > 0) return res.status(200).json(activeRooms)
     return res.status(200).json([
       {
         room_code: 'LIVE-2026',
@@ -96,6 +125,24 @@ export default function handler(req, res) {
         is_active: true,
       },
     ])
+  }
+
+  if (url.match(/\/live\/rooms\/[^/]+/)) {
+    const codeMatch = url.match(/\/live\/rooms\/([^/]+)/)
+    const code = (codeMatch ? codeMatch[1] : 'LIVE-2026').toUpperCase().split('?')[0]
+    const found = globalStore.rooms[code] || {
+      room_code: code,
+      title: 'Master Live Science: Water Cycle & Rain (जल चक्र)',
+      subject: 'General Science',
+      grade_level: 5,
+      original_language: 'en',
+      teacher_id: 101,
+      teacher_name: 'Dr. Ramesh Sharma',
+      student_count: 14,
+      created_at: new Date().toISOString(),
+      is_active: true,
+    }
+    return res.status(200).json(found)
   }
 
   return res.status(200).json({ status: 'ok', message: 'Vaanishiksha API Demo Active' })
