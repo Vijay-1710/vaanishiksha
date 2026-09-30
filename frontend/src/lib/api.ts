@@ -1,4 +1,4 @@
-import axios, { AxiosRequestConfig, AxiosResponse } from 'axios'
+import axios, { AxiosRequestConfig } from 'axios'
 import {
   DEMO_TEACHER,
   DEMO_STUDENT,
@@ -9,25 +9,6 @@ import {
 } from './mockData'
 
 const envBaseUrl = (import.meta as any).env?.VITE_API_URL || '/api'
-
-const api = axios.create({
-  baseURL: envBaseUrl,
-  timeout: 3500, // 3.5s timeout before graceful offline fallback
-})
-
-// Attach Bearer token to all outgoing requests if token exists
-api.interceptors.request.use(
-  (config) => {
-    const token = localStorage.getItem('token')
-    if (token && config.headers) {
-      config.headers.Authorization = `Bearer ${token}`
-    }
-    return config
-  },
-  (error) => {
-    return Promise.reject(error)
-  }
-)
 
 // Helper to determine active demo user based on stored token or role
 function getCurrentDemoUser() {
@@ -52,14 +33,51 @@ function resolveMockResponse(config: AxiosRequestConfig): any {
   // 1. Auth endpoints
   if (url.includes('/auth/login') || url.includes('/auth/register')) {
     let role = 'student'
-    if (typeof config.data === 'string') {
-      try {
-        const body = JSON.parse(config.data)
-        if (body.username?.includes('teacher') || body.role === 'teacher') role = 'teacher'
-      } catch {
-        // ignore
+    let email = 'user@vaanishiksha.edu'
+    let fullName = 'Vaanishiksha Learner'
+    let grade = 5
+
+    if (config.data) {
+      let body = config.data
+      if (typeof body === 'string') {
+        try {
+          body = JSON.parse(body)
+        } catch {
+          // ignore
+        }
       }
+      if (body.username?.includes('teacher') || body.role === 'teacher' || body.email?.includes('teacher')) {
+        role = 'teacher'
+        fullName = body.full_name || 'Dr. Ramesh Sharma'
+      } else {
+        fullName = body.full_name || 'Aarav Patel'
+        grade = body.grade_level || 5
+      }
+      if (body.email) email = body.email
+      else if (body.username) email = body.username
     }
+
+    // Persist registered/logged-in user to auth-storage
+    const activeUser = {
+      id: Date.now(),
+      email,
+      full_name: fullName,
+      role: role as 'teacher' | 'student',
+      preferred_language: 'hi',
+      grade_level: grade,
+    }
+    try {
+      localStorage.setItem(
+        'auth-storage',
+        JSON.stringify({
+          state: { user: activeUser, token: `demo-${role}-jwt-token` },
+          version: 0,
+        })
+      )
+    } catch {
+      // ignore
+    }
+
     const token = `demo-${role}-jwt-token`
     return {
       access_token: token,
@@ -237,47 +255,70 @@ function resolveMockResponse(config: AxiosRequestConfig): any {
     }
   }
 
-  // Generic empty array or object fallback
   return []
 }
 
-// Intercept responses: if Vercel returns HTML (SPA rewrite), replace with mock data
-api.interceptors.response.use(
-  (response: AxiosResponse) => {
-    // If Vercel or proxy returned HTML for an API request, treat as offline and serve mock data
-    if (
-      typeof response.data === 'string' &&
-      (response.data.includes('<!doctype html>') ||
-        response.data.includes('<html') ||
-        response.data.includes('Vite App'))
-    ) {
-      const mockResult = resolveMockResponse(response.config)
-      return {
-        ...response,
-        data: mockResult,
-        status: 200,
-      }
+// In-Memory Hybrid Adapter to guarantee 0-latency and eliminate 405 Method Not Allowed on Vercel
+const hybridAdapter: any = async (config: AxiosRequestConfig) => {
+  const isVercel = typeof window !== 'undefined' && window.location.hostname.includes('vercel.app')
+  const hasCustomApi = Boolean((import.meta as any).env?.VITE_API_URL)
+
+  // When deployed to Vercel without a custom external backend, immediately serve mock data
+  if (isVercel && !hasCustomApi) {
+    const mockData = resolveMockResponse(config)
+    return {
+      data: mockData,
+      status: 200,
+      statusText: 'OK',
+      headers: {},
+      config,
     }
-    return response
+  }
+
+  // Fallback to fetch adapter
+  try {
+    const defaultAdapter = (axios.defaults.adapter as any)
+    if (typeof defaultAdapter === 'function') {
+      return await defaultAdapter(config)
+    }
+  } catch (err: any) {
+    // If request fails (network error, 404, 405), fallback gracefully
+    const mockData = resolveMockResponse(config)
+    return {
+      data: mockData,
+      status: 200,
+      statusText: 'OK (Offline Fallback)',
+      headers: {},
+      config,
+    }
+  }
+
+  const mockData = resolveMockResponse(config)
+  return {
+    data: mockData,
+    status: 200,
+    statusText: 'OK (Offline Fallback)',
+    headers: {},
+    config,
+  }
+}
+
+const api = axios.create({
+  baseURL: envBaseUrl,
+  timeout: 3500,
+  adapter: hybridAdapter,
+})
+
+// Attach Bearer token to all outgoing requests if token exists
+api.interceptors.request.use(
+  (config) => {
+    const token = localStorage.getItem('token')
+    if (token && config.headers) {
+      config.headers.Authorization = `Bearer ${token}`
+    }
+    return config
   },
   (error) => {
-    // Fallback on Network Error, 404, 405 Method Not Allowed, or 500
-    if (
-      error.code === 'ECONNABORTED' ||
-      !error.response ||
-      error.response.status === 404 ||
-      error.response.status === 405 ||
-      error.response.status >= 500
-    ) {
-      const mockResult = resolveMockResponse(error.config || {})
-      return Promise.resolve({
-        data: mockResult,
-        status: 200,
-        statusText: 'OK (Offline Demo Mode)',
-        headers: {},
-        config: error.config || {},
-      })
-    }
     return Promise.reject(error)
   }
 )
