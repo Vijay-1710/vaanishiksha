@@ -30,6 +30,8 @@ def transcribe_audio(audio_file_path: str, language: str = None) -> str:
     Returns:
         Transcript text
     """
+    if audio_file_path:
+        audio_file_path = os.path.abspath(os.path.normpath(audio_file_path))
     model = get_whisper_model()
     if model is not None:
         try:

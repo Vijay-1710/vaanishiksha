@@ -37,6 +37,8 @@ export default function TeacherDashboard() {
     },
   })
 
+  const lectureList = Array.isArray(lectures) ? lectures : []
+
   const uploadMutation = useMutation({
     mutationFn: async () => {
       if (!file) throw new Error('No file selected')
@@ -226,9 +228,9 @@ export default function TeacherDashboard() {
             <div className="inline-block animate-spin rounded-full h-10 w-10 border-2 border-primary-600 border-t-transparent"></div>
             <p className="mt-3 text-gray-600">Loading your lectures...</p>
           </div>
-        ) : lectures && lectures.length > 0 ? (
+        ) : lectureList.length > 0 ? (
           <div className="grid gap-4">
-            {lectures.map((lecture: Lecture) => (
+            {lectureList.map((lecture: Lecture) => (
               <div key={lecture.id} className="card hover:shadow-md transition border border-gray-100">
                 <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                   <div className="space-y-1">

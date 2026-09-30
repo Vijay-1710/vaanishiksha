@@ -62,7 +62,10 @@ export default function StudentDashboard() {
     refetchInterval: 5000,
   })
 
-  const filteredLectures = lectures?.filter((lecture: Lecture) => {
+  const lectureList = Array.isArray(lectures) ? lectures : []
+  const activeRoomList = Array.isArray(activeRooms) ? activeRooms : []
+
+  const filteredLectures = lectureList.filter((lecture: Lecture) => {
     const matchesGrade = selectedGrade === 'all' || lecture.grade_level === selectedGrade
     const matchesSearch =
       !searchQuery.trim() ||
@@ -109,9 +112,9 @@ export default function StudentDashboard() {
 
       <div className="max-w-7xl mx-auto px-4 py-8">
         {/* Active Live Rooms Alert */}
-        {activeRooms && activeRooms.length > 0 && (
+        {activeRoomList.length > 0 && (
           <div className="mb-6 space-y-3">
-            {activeRooms.map((room) => (
+            {activeRoomList.map((room) => (
               <div
                 key={room.room_code}
                 className="p-4 sm:p-5 rounded-2xl bg-gradient-to-r from-rose-600 via-pink-600 to-indigo-700 text-white shadow-lg border border-rose-300/40 flex flex-col sm:flex-row sm:items-center justify-between gap-4 animate-pulse-subtle"

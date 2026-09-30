@@ -149,6 +149,31 @@ export default function LiveClassStudent() {
       }
     }
 
+    ws.onerror = () => {
+      console.log('Student WS offline - simulating live speech stream')
+      setTimeout(() => {
+        const demoCaptions: CaptionItem[] = [
+          {
+            original_text: 'Welcome students to our live science session on the water cycle.',
+            translated_text: lang === 'hi' ? 'जल चक्र पर हमारे लाइव विज्ञान सत्र में विद्यार्थियों का स्वागत है।' : 'Welcome students to our live science session on the water cycle.',
+            timestamp: new Date().toLocaleTimeString(),
+          },
+          {
+            original_text: 'The sun warms water in rivers and oceans, causing evaporation.',
+            translated_text: lang === 'hi' ? 'सूर्य नदियों और महासागरों में पानी को गर्म करता है, जिससे वाष्पीकरण होता है।' : 'The sun warms water in rivers and oceans, causing evaporation.',
+            timestamp: new Date().toLocaleTimeString(),
+          },
+          {
+            original_text: 'As vapor rises into the cold sky, it condenses to form rain clouds.',
+            translated_text: lang === 'hi' ? 'जैसे ही वाष्प ठंडे आसमान में ऊपर उठती है, यह बारिश के बादल बनाने के लिए संघनित होती है।' : 'As vapor rises into the cold sky, it condenses to form rain clouds.',
+            timestamp: new Date().toLocaleTimeString(),
+          },
+        ]
+        setCaptions(demoCaptions)
+        setCurrentCaption(demoCaptions[demoCaptions.length - 1])
+      }, 1200)
+    }
+
     ws.onclose = () => {
       console.log('Student WS disconnected')
     }

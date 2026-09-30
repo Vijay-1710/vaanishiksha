@@ -63,6 +63,8 @@ export default function NCERTExplorer() {
     },
   })
 
+  const chapterList = Array.isArray(chapters) ? chapters : []
+
   // Adopt chapter mutation
   const adoptMutation = useMutation({
     mutationFn: async (chapterId: string) => {
@@ -213,9 +215,9 @@ export default function NCERTExplorer() {
             <div className="inline-block animate-spin rounded-full h-10 w-10 border-3 border-primary-600 border-t-transparent"></div>
             <p className="mt-3 text-gray-600 text-sm font-medium">Loading NCERT syllabus...</p>
           </div>
-        ) : chapters && chapters.length > 0 ? (
+        ) : chapterList.length > 0 ? (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {chapters.map((chap) => {
+            {chapterList.map((chap) => {
               const isAdopting = adoptingId === chap.id
 
               return (
