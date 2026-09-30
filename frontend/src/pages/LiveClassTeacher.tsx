@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../stores/authStore'
 import api from '../lib/api'
+import { LiveSyncManager, LiveMessage } from '../lib/liveSync'
 
 interface StudentInfo {
   name: string
@@ -51,6 +52,7 @@ export default function LiveClassTeacher() {
   const audioContextRef = useRef<AudioContext | null>(null)
   const animFrameRef = useRef<number | null>(null)
   const activeAudioPlayerRef = useRef<HTMLAudioElement | null>(null)
+  const liveSyncRef = useRef<LiveSyncManager | null>(null)
 
   // Initialize SpeechRecognition if available in browser
   useEffect(() => {
@@ -239,52 +241,87 @@ export default function LiveClassTeacher() {
   }
 
   const connectWebSocket = (code: string) => {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const wsUrl = `${protocol}//${window.location.host}/api/live/ws/${code}/teacher`
-    const ws = new WebSocket(wsUrl)
-
-    ws.onopen = () => {
-      console.log('Teacher WS connected to room', code)
-    }
-
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data)
-        if (data.type === 'roster_update') {
-          setStudents(data.students || [])
-        } else if (data.type === 'speech_ack') {
-          setTranscriptFeed((prev) => [
-            ...prev,
-            { text: data.text, time: data.timestamp || new Date().toLocaleTimeString() },
-          ])
-          setIsProcessingAudio(false)
-        } else if (data.type === 'student_doubt') {
-          setDoubts((prev) => [data.doubt, ...prev])
+    // 1. Initialize real-time cross-tab and cross-device LiveSyncManager
+    liveSyncRef.current?.close()
+    liveSyncRef.current = new LiveSyncManager(
+      code,
+      user?.full_name || 'Dr. Ramesh Sharma',
+      'teacher',
+      (msg: LiveMessage) => {
+        if (msg.type === 'student_join') {
+          const sName = msg.payload?.name || msg.senderName
+          setStudents((prev) => {
+            if (prev.some((s) => s.name === sName)) return prev
+            return [
+              ...prev,
+              {
+                name: sName,
+                language: msg.payload?.language || 'hi',
+                joined_at: new Date(msg.timestamp).toLocaleTimeString(),
+              },
+            ]
+          })
+        } else if (msg.type === 'student_doubt') {
+          const doubt = msg.payload?.doubt || {
+            student_name: msg.senderName,
+            question: msg.payload?.question || 'Question asked',
+            student_lang: msg.payload?.language || 'hi',
+            translated_question: msg.payload?.question || 'Question asked',
+            timestamp: new Date(msg.timestamp).toLocaleTimeString(),
+          }
+          setDoubts((prev) => [doubt, ...prev])
         }
-      } catch (e) {
-        console.error('WS parse error:', e)
       }
-    }
+    )
 
-    ws.onerror = () => {
-      console.log('Teacher WS offline - demo classroom active')
-      setStudents([
-        { name: 'Aarav Patel (Class 5)', language: 'hi', joined_at: new Date().toLocaleTimeString() },
-        { name: 'Deepak Kumar', language: 'ta', joined_at: new Date().toLocaleTimeString() },
-        { name: 'Priya Reddy', language: 'te', joined_at: new Date().toLocaleTimeString() },
-      ])
+    // 2. Also try native WebSocket if available
+    try {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+      const wsUrl = `${protocol}//${window.location.host}/api/live/ws/${code}/teacher`
+      const ws = new WebSocket(wsUrl)
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data)
+          if (data.type === 'roster_update') {
+            setStudents(data.students || [])
+          } else if (data.type === 'speech_ack') {
+            setTranscriptFeed((prev) => [
+              ...prev,
+              { text: data.text, time: data.timestamp || new Date().toLocaleTimeString() },
+            ])
+            setIsProcessingAudio(false)
+          } else if (data.type === 'student_doubt') {
+            setDoubts((prev) => [data.doubt, ...prev])
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+      socketRef.current = ws
+    } catch (e) {
+      // ignore
     }
-
-    ws.onclose = () => {
-      console.log('Teacher WS closed')
-    }
-
-    socketRef.current = ws
   }
 
   const sendSpeech = (text: string) => {
     if (!text.trim()) return
     const trimmed = text.trim()
+    const speechTime = new Date().toLocaleTimeString()
+
+    // 1. Update local teacher transcript feed immediately
+    setTranscriptFeed((prev) => [
+      ...prev,
+      { text: trimmed, time: speechTime },
+    ])
+
+    // 2. Broadcast to all student tabs and devices via LiveSyncManager
+    liveSyncRef.current?.broadcast('teacher_speech', {
+      text: trimmed,
+      language: 'en',
+      timestamp: speechTime,
+    })
+
+    // 3. Also send to WebSocket if open
     if (socketRef.current?.readyState === WebSocket.OPEN) {
       socketRef.current.send(
         JSON.stringify({
@@ -293,13 +330,8 @@ export default function LiveClassTeacher() {
           language: 'en',
         })
       )
-    } else {
-      // Offline / Vercel fallback: update transcript feed immediately
-      setTranscriptFeed((prev) => [
-        ...prev,
-        { text: trimmed, time: new Date().toLocaleTimeString() },
-      ])
     }
+
     setSpeechInput('')
   }
 
@@ -357,6 +389,8 @@ export default function LiveClassTeacher() {
     setIsListening(false)
 
     try {
+      liveSyncRef.current?.broadcast('class_ended', { lecture_id: 1 })
+      liveSyncRef.current?.close()
       const res = await api.post(`/live/rooms/${roomCode}/end`)
       alert('Live class ended successfully! The lesson has been archived.')
       if (res.data.lecture_id) {

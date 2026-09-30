@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react'
 import { Link, useParams, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../stores/authStore'
 import api from '../lib/api'
+import { LiveSyncManager, LiveMessage, translateLiveText } from '../lib/liveSync'
 
 const LANGUAGES: Record<string, string> = {
   hi: 'हिन्दी (Hindi)',
@@ -63,6 +64,7 @@ export default function LiveClassStudent() {
   const [endedLectureId, setEndedLectureId] = useState<number | null>(null)
 
   const socketRef = useRef<WebSocket | null>(null)
+  const liveSyncRef = useRef<LiveSyncManager | null>(null)
   const captionsEndRef = useRef<HTMLDivElement>(null)
 
   // Audio Queue refs
@@ -100,85 +102,87 @@ export default function LiveClassStudent() {
   }
 
   const connectWebSocket = (code: string, lang: string) => {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const studentName = encodeURIComponent(user?.full_name || 'Student')
-    const wsUrl = `${protocol}//${window.location.host}/api/live/ws/${code}/student?name=${studentName}&language=${lang}`
-    const ws = new WebSocket(wsUrl)
-
-    ws.onopen = () => {
-      console.log('Student WS connected to room', code)
-    }
-
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data)
-        if (data.type === 'welcome') {
-          if (data.recent_transcripts && data.recent_transcripts.length > 0) {
-            setCaptions(data.recent_transcripts)
-            setCurrentCaption(data.recent_transcripts[data.recent_transcripts.length - 1])
-          }
-        } else if (data.type === 'live_caption') {
+    // 1. Initialize real-time cross-tab and cross-device LiveSyncManager
+    liveSyncRef.current?.close()
+    liveSyncRef.current = new LiveSyncManager(
+      code,
+      user?.full_name || 'Aarav Patel',
+      'student',
+      (msg: LiveMessage) => {
+        if (msg.type === 'teacher_speech') {
+          const originalText = msg.payload?.text || ''
+          const translatedText = translateLiveText(originalText, selectedLanguage)
           const item: CaptionItem = {
-            original_text: data.original_text,
-            translated_text: data.translated_text,
-            audio_url: data.audio_url,
-            timestamp: data.timestamp,
+            original_text: originalText,
+            translated_text: translatedText,
+            timestamp: msg.payload?.timestamp || new Date().toLocaleTimeString(),
           }
           setCaptions((prev) => [...prev, item])
           setCurrentCaption(item)
-
-          // Play audio in mother tongue if audio is enabled
           if (audioEnabled) {
-            if (ttsEngine === 'server' && item.audio_url) {
-              enqueueAudio(item.audio_url)
-            } else if ('speechSynthesis' in window) {
-              speakTranslatedText(item.translated_text, selectedLanguage)
-            }
+            speakTranslatedText(translatedText, selectedLanguage)
           }
-        } else if (data.type === 'doubt_sent') {
-          setMyDoubts((prev) => [
-            { text: data.question, time: new Date().toLocaleTimeString(), isVoice: true },
-            ...prev,
-          ])
-          setIsSubmittingVoiceDoubt(false)
-        } else if (data.type === 'class_ended') {
-          setEndedLectureId(data.lecture_id)
+        } else if (msg.type === 'class_ended') {
+          setEndedLectureId(msg.payload?.lecture_id || 1)
         }
-      } catch (e) {
-        console.error('WS message error:', e)
       }
-    }
+    )
 
-    ws.onerror = () => {
-      console.log('Student WS offline - simulating live speech stream')
-      setTimeout(() => {
-        const demoCaptions: CaptionItem[] = [
-          {
-            original_text: 'Welcome students to our live science session on the water cycle.',
-            translated_text: lang === 'hi' ? 'जल चक्र पर हमारे लाइव विज्ञान सत्र में विद्यार्थियों का स्वागत है।' : 'Welcome students to our live science session on the water cycle.',
-            timestamp: new Date().toLocaleTimeString(),
-          },
-          {
-            original_text: 'The sun warms water in rivers and oceans, causing evaporation.',
-            translated_text: lang === 'hi' ? 'सूर्य नदियों और महासागरों में पानी को गर्म करता है, जिससे वाष्पीकरण होता है।' : 'The sun warms water in rivers and oceans, causing evaporation.',
-            timestamp: new Date().toLocaleTimeString(),
-          },
-          {
-            original_text: 'As vapor rises into the cold sky, it condenses to form rain clouds.',
-            translated_text: lang === 'hi' ? 'जैसे ही वाष्प ठंडे आसमान में ऊपर उठती है, यह बारिश के बादल बनाने के लिए संघनित होती है।' : 'As vapor rises into the cold sky, it condenses to form rain clouds.',
-            timestamp: new Date().toLocaleTimeString(),
-          },
-        ]
-        setCaptions(demoCaptions)
-        setCurrentCaption(demoCaptions[demoCaptions.length - 1])
-      }, 1200)
-    }
+    // Announce student joined the room
+    liveSyncRef.current.broadcast('student_join', {
+      name: user?.full_name || 'Aarav Patel',
+      language: lang,
+    })
 
-    ws.onclose = () => {
-      console.log('Student WS disconnected')
-    }
+    // 2. Also try native WebSocket if available
+    try {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+      const studentName = encodeURIComponent(user?.full_name || 'Student')
+      const wsUrl = `${protocol}//${window.location.host}/api/live/ws/${code}/student?name=${studentName}&language=${lang}`
+      const ws = new WebSocket(wsUrl)
 
-    socketRef.current = ws
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data)
+          if (data.type === 'welcome') {
+            if (data.recent_transcripts && data.recent_transcripts.length > 0) {
+              setCaptions(data.recent_transcripts)
+              setCurrentCaption(data.recent_transcripts[data.recent_transcripts.length - 1])
+            }
+          } else if (data.type === 'live_caption') {
+            const item: CaptionItem = {
+              original_text: data.original_text,
+              translated_text: data.translated_text,
+              audio_url: data.audio_url,
+              timestamp: data.timestamp,
+            }
+            setCaptions((prev) => [...prev, item])
+            setCurrentCaption(item)
+            if (audioEnabled) {
+              if (ttsEngine === 'server' && item.audio_url) {
+                enqueueAudio(item.audio_url)
+              } else if ('speechSynthesis' in window) {
+                speakTranslatedText(item.translated_text, selectedLanguage)
+              }
+            }
+          } else if (data.type === 'doubt_sent') {
+            setMyDoubts((prev) => [
+              { text: data.question, time: new Date().toLocaleTimeString(), isVoice: true },
+              ...prev,
+            ])
+            setIsSubmittingVoiceDoubt(false)
+          } else if (data.type === 'class_ended') {
+            setEndedLectureId(data.lecture_id)
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+
+      socketRef.current = ws
+    } catch (e) {
+      // ignore
+    }
   }
 
   // Audio Out Queue processor: plays sentences smoothly one by one without overlap
@@ -290,6 +294,10 @@ export default function LiveClassStudent() {
   // Handle mid-class language change
   const handleLanguageChange = (newLang: string) => {
     setSelectedLanguage(newLang)
+    liveSyncRef.current?.broadcast('student_join', {
+      name: user?.full_name || 'Aarav Patel',
+      language: newLang,
+    })
     if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
       socketRef.current.send(
         JSON.stringify({
@@ -303,17 +311,35 @@ export default function LiveClassStudent() {
   // Send Text Doubt
   const handleSendDoubt = (e: React.FormEvent) => {
     e.preventDefault()
-    if (!doubtText.trim() || !socketRef.current) return
-    socketRef.current.send(
-      JSON.stringify({
-        type: 'ask_doubt',
-        question: doubtText.trim(),
-      })
-    )
+    if (!doubtText.trim()) return
+    const text = doubtText.trim()
+    const nowTime = new Date().toLocaleTimeString()
+    const studentName = user?.full_name || 'Aarav Patel'
+
     setMyDoubts((prev) => [
-      { text: doubtText.trim(), time: new Date().toLocaleTimeString(), isVoice: false },
+      { text, time: nowTime, isVoice: false },
       ...prev,
     ])
+
+    // Broadcast doubt to teacher in real time!
+    liveSyncRef.current?.broadcast('student_doubt', {
+      doubt: {
+        student_name: studentName,
+        question: text,
+        student_lang: selectedLanguage,
+        translated_question: text,
+        timestamp: nowTime,
+      },
+    })
+
+    if (socketRef.current?.readyState === WebSocket.OPEN) {
+      socketRef.current.send(
+        JSON.stringify({
+          type: 'ask_doubt',
+          question: text,
+        })
+      )
+    }
     setDoubtText('')
   }
 
@@ -333,11 +359,31 @@ export default function LiveClassStudent() {
         stream.getTracks().forEach((track) => track.stop())
         setIsSubmittingVoiceDoubt(true)
 
-        // Convert audioBlob to base64 and send via WS audio_doubt
+        const nowTime = new Date().toLocaleTimeString()
+        const studentName = user?.full_name || 'Aarav Patel'
+        const voiceQuestion = `🎙️ Voice doubt in ${LANGUAGES[selectedLanguage] || selectedLanguage}`
+
+        setMyDoubts((prev) => [
+          { text: voiceQuestion, time: nowTime, isVoice: true },
+          ...prev,
+        ])
+        setIsSubmittingVoiceDoubt(false)
+
+        liveSyncRef.current?.broadcast('student_doubt', {
+          doubt: {
+            student_name: studentName,
+            question: voiceQuestion,
+            student_lang: selectedLanguage,
+            translated_question: voiceQuestion,
+            timestamp: nowTime,
+          },
+        })
+
+        // Also send to WS if connected
         const reader = new FileReader()
         reader.onloadend = () => {
           const base64Data = (reader.result as string).split(',')[1]
-          if (base64Data && socketRef.current) {
+          if (base64Data && socketRef.current?.readyState === WebSocket.OPEN) {
             socketRef.current.send(
               JSON.stringify({
                 type: 'audio_doubt',

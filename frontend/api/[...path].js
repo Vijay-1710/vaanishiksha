@@ -1,4 +1,9 @@
-// Vercel Serverless Function to handle any direct API calls gracefully
+// Vercel Serverless Function to handle API and live classroom real-time sync
+const globalStore = global._vaanishiksha_store || (global._vaanishiksha_store = {
+  rooms: {},
+  messages: {},
+})
+
 export default function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*')
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
@@ -10,6 +15,7 @@ export default function handler(req, res) {
 
   const url = (req.url || '').toLowerCase()
 
+  // 1. Auth endpoints
   if (url.includes('/auth/login') || url.includes('/auth/register')) {
     let body = req.body || {}
     if (typeof body === 'string') {
@@ -42,6 +48,54 @@ export default function handler(req, res) {
       preferred_language: 'hi',
       grade_level: 5,
     })
+  }
+
+  // 2. Live Classroom Real-Time Synchronization Endpoints
+  if (url.includes('/broadcast')) {
+    const codeMatch = url.match(/\/live\/rooms\/([^/]+)\/broadcast/)
+    const roomCode = (codeMatch ? codeMatch[1] : 'LIVE-2026').toUpperCase()
+    let payload = req.body || {}
+    if (typeof payload === 'string') {
+      try { payload = JSON.parse(payload) } catch (e) {}
+    }
+
+    if (!globalStore.messages[roomCode]) {
+      globalStore.messages[roomCode] = []
+    }
+    globalStore.messages[roomCode].push(payload)
+    if (globalStore.messages[roomCode].length > 100) {
+      globalStore.messages[roomCode].shift()
+    }
+    return res.status(200).json({ status: 'broadcasted', id: payload.id })
+  }
+
+  if (url.includes('/sync')) {
+    const codeMatch = url.match(/\/live\/rooms\/([^/]+)\/sync/)
+    const roomCode = (codeMatch ? codeMatch[1] : 'LIVE-2026').toUpperCase()
+    const queryIdx = req.url.indexOf('?')
+    const params = new URLSearchParams(queryIdx > -1 ? req.url.substring(queryIdx) : '')
+    const after = parseInt(params.get('after') || '0', 10)
+
+    const list = globalStore.messages[roomCode] || []
+    const newItems = list.filter((m) => m && m.timestamp > after)
+    return res.status(200).json(newItems)
+  }
+
+  if (url.includes('/live/rooms/active')) {
+    return res.status(200).json([
+      {
+        room_code: 'LIVE-2026',
+        title: 'Master Live Science: Water Cycle & Rain (जल चक्र)',
+        subject: 'General Science',
+        grade_level: 5,
+        original_language: 'en',
+        teacher_id: 101,
+        teacher_name: 'Dr. Ramesh Sharma',
+        student_count: 14,
+        created_at: new Date().toISOString(),
+        is_active: true,
+      },
+    ])
   }
 
   return res.status(200).json({ status: 'ok', message: 'Vaanishiksha API Demo Active' })
