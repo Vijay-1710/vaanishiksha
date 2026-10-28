@@ -323,4 +323,29 @@ api.interceptors.request.use(
   }
 )
 
+// Response interceptor for error normalization and auth cleanup
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      // Auto-clear invalid token on 401
+      if (typeof localStorage !== 'undefined') {
+        localStorage.removeItem('token')
+      }
+    }
+
+    // Enhance error with clean friendly message
+    const customMessage =
+      error.response?.data?.detail ||
+      error.response?.data?.error?.message ||
+      (error.code === 'ECONNABORTED' ? 'Request timed out. Please try again.' : null) ||
+      error.message ||
+      'An unexpected network error occurred'
+
+    error.friendlyMessage = customMessage
+    return Promise.reject(error)
+  }
+)
+
 export default api
+
