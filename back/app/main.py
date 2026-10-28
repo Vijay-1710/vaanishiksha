@@ -1,10 +1,16 @@
-from fastapi import FastAPI
+import os
+import time
+from fastapi import FastAPI, status
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import text
 from app.config import settings
-from app.database import engine, Base
+from app.database import engine, Base, SessionLocal
 from app.routers import auth, lectures, users, worksheets, ncert, live
-import os
+
+# Track startup timestamp for uptime metrics
+APP_START_TIME = time.time()
 
 # Create database tables
 Base.metadata.create_all(bind=engine)
@@ -43,7 +49,6 @@ app.include_router(ncert.router, prefix="/api/ncert", tags=["NCERT Curriculum"])
 app.include_router(live.router, prefix="/api/live", tags=["Live Class"])
 
 
-
 @app.get("/")
 async def root():
     return {
@@ -54,5 +59,47 @@ async def root():
 
 
 @app.get("/health")
+@app.get("/api/health")
 async def health_check():
-    return {"status": "healthy"}
+    """Comprehensive health check checking database ping, disk storage, and uptime."""
+    db_ok = False
+    db_error = None
+    try:
+        with SessionLocal() as session:
+            session.execute(text("SELECT 1"))
+            db_ok = True
+    except Exception as exc:
+        db_error = str(exc)
+
+    storage_writable = os.access(settings.storage_path, os.W_OK)
+    uptime_seconds = round(time.time() - APP_START_TIME, 2)
+
+    all_healthy = db_ok and storage_writable
+    status_code = status.HTTP_200_OK if all_healthy else status.HTTP_503_SERVICE_UNAVAILABLE
+
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "status": "healthy" if all_healthy else "degraded",
+            "uptime_seconds": uptime_seconds,
+            "checks": {
+                "database": {"healthy": db_ok, "error": db_error},
+                "storage_writable": {"healthy": storage_writable, "path": settings.storage_path}
+            },
+            "version": "0.1.0"
+        }
+    )
+
+
+@app.get("/api/ready")
+async def readiness_probe():
+    """Readiness probe for container orchestrators and load balancers."""
+    try:
+        with SessionLocal() as session:
+            session.execute(text("SELECT 1"))
+        return {"ready": True}
+    except Exception as exc:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"ready": False, "error": str(exc)}
+        )
