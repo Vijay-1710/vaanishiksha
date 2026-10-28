@@ -3,7 +3,7 @@ import { Link, useParams, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../stores/authStore'
 import api from '../lib/api'
 import { LiveSyncManager, LiveMessage, translateLiveText } from '../lib/liveSync'
-import SyncedTeacherVideo from '../components/SyncedTeacherVideo'
+import { VideoPlayerContainer } from '../components/VideoPlayerContainer'
 
 const LANGUAGES: Record<string, { name: string; flag: string; voice: string }> = {
   hi: { name: 'हिन्दी (Hindi)', flag: '🇮🇳', voice: 'hi-IN' },
@@ -58,6 +58,12 @@ export default function LiveClassStudent() {
   // Delays teacher video so mouth movements perfectly align with translated mother tongue audio!
   const [syncDelayMs, setSyncDelayMs] = useState(1800)
   const [isDelayEnabled, setIsDelayEnabled] = useState(true)
+  const [pacingRate, setPacingRate] = useState(1.0)
+  const [showDrawerVideo, setShowDrawerVideo] = useState(true)
+
+  // WebRTC MediaStream & Video Track Support
+  const [remoteMediaStream, setRemoteMediaStream] = useState<MediaStream | null>(null)
+  const [remoteVideoTrack, setRemoteVideoTrack] = useState<MediaStreamTrack | null>(null)
 
   // Audio Out controls
   const [audioEnabled, setAudioEnabled] = useState(true)
@@ -176,6 +182,39 @@ export default function LiveClassStudent() {
         } else if (msg.type === 'teacher_video_frame') {
           if (msg.payload?.frame) {
             setIncomingTeacherFrame(msg.payload.frame)
+          }
+        } else if (msg.type === 'synced_media_packet') {
+          if (msg.payload?.frame) {
+            setIncomingTeacherFrame(msg.payload.frame)
+          }
+          if (typeof msg.payload?.processing_latency_ms === 'number') {
+            setSyncDelayMs(msg.payload.processing_latency_ms + 200)
+          }
+          if (typeof msg.payload?.pacing_rate === 'number') {
+            setPacingRate(msg.payload.pacing_rate)
+          }
+          if (msg.payload?.text) {
+            const originalText = msg.payload.text
+            const translatedText =
+              msg.payload.translations?.[selectedLanguage] ||
+              translateLiveText(originalText, selectedLanguage)
+            const item: CaptionItem = {
+              original_text: originalText,
+              translated_text: translatedText,
+              timestamp: msg.payload?.timestamp || new Date().toLocaleTimeString(),
+            }
+            setCaptions((prev) => [...prev, item])
+            setCurrentCaption(item)
+            if (audioEnabled) {
+              speakTranslatedText(translatedText, selectedLanguage)
+            }
+          }
+        } else if (msg.type === 'video_delay_update') {
+          if (typeof msg.payload?.delay_ms === 'number') {
+            setSyncDelayMs(msg.payload.delay_ms)
+          }
+          if (typeof msg.payload?.pacing_rate === 'number') {
+            setPacingRate(msg.payload.pacing_rate)
           }
         } else if (msg.type === 'class_ended') {
           setEndedLectureId(msg.payload?.lecture_id || 1)
@@ -536,9 +575,10 @@ export default function LiveClassStudent() {
         {/* Main Center Stage: Synced Teacher Video with Delayed Lip-Sync & CC */}
         <div className="flex-1 p-3 sm:p-5 flex flex-col items-center justify-center min-w-0">
           <div className="relative w-full h-full max-h-[82vh] rounded-2xl overflow-hidden bg-slate-900 border border-slate-800/80 shadow-2xl flex flex-col">
-            {/* Synced Teacher Video with Delayed Lip-Sync Frame Buffer */}
+            {/* Synced Teacher Video Player Container with Delayed Lip-Sync Frame Buffer */}
             <div className="relative flex-1 w-full h-full">
-              <SyncedTeacherVideo
+              <VideoPlayerContainer
+                placement="primary"
                 isTeacherStreaming={true}
                 teacherName={roomMeta?.teacher_name || 'Dr. Ramesh Sharma'}
                 currentSpeech={showCC ? currentCaption?.original_text || '' : ''}
@@ -546,9 +586,12 @@ export default function LiveClassStudent() {
                 selectedLanguageName={LANGUAGES[selectedLanguage]?.name || 'Hindi'}
                 syncDelayMs={syncDelayMs}
                 isDelayEnabled={isDelayEnabled}
+                playbackRate={pacingRate}
                 onToggleDelay={(enabled) => setIsDelayEnabled(enabled)}
                 onDelayChange={(ms) => setSyncDelayMs(ms)}
                 incomingTeacherFrame={incomingTeacherFrame}
+                mediaStream={remoteMediaStream}
+                videoTrack={remoteVideoTrack}
               />
 
               {/* Floating Student Video Tile (Self View - PiP like Google Meet) */}
@@ -775,11 +818,43 @@ export default function LiveClassStudent() {
 
             {/* TAB 2: TRANSCRIPT HISTORY */}
             {activeTab === 'transcript' && (
-              <div className="flex-1 p-4 flex flex-col overflow-hidden">
-                <div className="flex items-center justify-between mb-3 pb-2 border-b border-slate-800">
-                  <span className="text-xs font-bold text-slate-300">Live Transcript History</span>
-                  <span className="text-[11px] text-slate-500 font-mono">{captions.length} sentences</span>
+              <div className="flex-1 p-3 sm:p-4 flex flex-col overflow-hidden">
+                <div className="flex items-center justify-between mb-2 pb-2 border-b border-slate-800">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs font-bold text-slate-300">Live Transcript History</span>
+                    <span className="text-[10px] text-slate-500 font-mono">({captions.length})</span>
+                  </div>
+                  <button
+                    onClick={() => setShowDrawerVideo(!showDrawerVideo)}
+                    className="text-[10px] font-bold text-primary-400 hover:text-primary-300 flex items-center gap-1 bg-slate-800/80 px-2 py-0.5 rounded transition"
+                    title="Toggle docked video feed container"
+                  >
+                    <span>{showDrawerVideo ? '▲ Hide Video' : '▼ Show Video'}</span>
+                  </button>
                 </div>
+
+                {/* Video Player Container docked directly above transcript history */}
+                {showDrawerVideo && (
+                  <div className="w-full flex-shrink-0">
+                    <VideoPlayerContainer
+                      placement="drawer"
+                      isTeacherStreaming={true}
+                      teacherName={roomMeta?.teacher_name || 'Dr. Ramesh Sharma'}
+                      currentSpeech={showCC ? currentCaption?.original_text || '' : ''}
+                      translatedSpeech={showCC ? currentCaption?.translated_text || '' : ''}
+                      selectedLanguageName={LANGUAGES[selectedLanguage]?.name || 'Hindi'}
+                      syncDelayMs={syncDelayMs}
+                      isDelayEnabled={isDelayEnabled}
+                      playbackRate={pacingRate}
+                      onToggleDelay={(enabled) => setIsDelayEnabled(enabled)}
+                      onDelayChange={(ms) => setSyncDelayMs(ms)}
+                      incomingTeacherFrame={incomingTeacherFrame}
+                      mediaStream={remoteMediaStream}
+                      videoTrack={remoteVideoTrack}
+                      containerTitle="Teacher Video (Synced)"
+                    />
+                  </div>
+                )}
 
                 <div className="flex-1 overflow-y-auto space-y-2.5 pr-1 text-xs">
                   {captions.map((c, idx) => (
@@ -921,6 +996,72 @@ export default function LiveClassStudent() {
                       <span>0s (Live)</span>
                       <span>1.8s (Dubbed Sync)</span>
                       <span>3.0s</span>
+                    </div>
+                  </div>
+
+                  {/* WebRTC Video Track Test Controls */}
+                  <div className="pt-2 border-t border-slate-800 space-y-1.5">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                      3. WebRTC Stream & Track Ingestion:
+                    </span>
+                    <button
+                      onClick={async () => {
+                        try {
+                          const stream = await navigator.mediaDevices.getUserMedia({
+                            video: { width: 640, height: 360 },
+                            audio: false,
+                          })
+                          setRemoteMediaStream(stream)
+                          setRemoteVideoTrack(stream.getVideoTracks()[0])
+                        } catch (err) {
+                          alert('Camera not available for WebRTC test: ' + err)
+                        }
+                      }}
+                      className="w-full text-left p-2 rounded-lg bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-200 transition flex items-center justify-between"
+                    >
+                      <span className="font-semibold">📹 Attach Incoming WebRTC Track</span>
+                      <span className="text-[10px] text-indigo-400 font-bold">
+                        {remoteVideoTrack ? 'Active ●' : 'Test'}
+                      </span>
+                    </button>
+
+                    <div className="space-y-1 pt-1">
+                      <div className="flex justify-between text-[11px] text-slate-400">
+                        <span>Pacing / Expansion Speed:</span>
+                        <span className="font-mono text-amber-400 font-bold">{pacingRate.toFixed(2)}x</span>
+                      </div>
+                      <div className="grid grid-cols-3 gap-1.5">
+                        <button
+                          onClick={() => setPacingRate(0.85)}
+                          className={`py-1 text-[10px] rounded border font-semibold ${
+                            pacingRate === 0.85
+                              ? 'bg-amber-600/30 text-amber-300 border-amber-500/60'
+                              : 'bg-slate-950 text-slate-400 border-slate-800'
+                          }`}
+                        >
+                          0.85x Fast
+                        </button>
+                        <button
+                          onClick={() => setPacingRate(1.0)}
+                          className={`py-1 text-[10px] rounded border font-semibold ${
+                            pacingRate === 1.0
+                              ? 'bg-emerald-600/30 text-emerald-300 border-emerald-500/60'
+                              : 'bg-slate-950 text-slate-400 border-slate-800'
+                          }`}
+                        >
+                          1.0x Normal
+                        </button>
+                        <button
+                          onClick={() => setPacingRate(1.2)}
+                          className={`py-1 text-[10px] rounded border font-semibold ${
+                            pacingRate === 1.2
+                              ? 'bg-amber-600/30 text-amber-300 border-amber-500/60'
+                              : 'bg-slate-950 text-slate-400 border-slate-800'
+                          }`}
+                        >
+                          1.2x Expanded
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </div>

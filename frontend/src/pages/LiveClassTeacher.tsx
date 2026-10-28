@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../stores/authStore'
 import api from '../lib/api'
 import { LiveSyncManager, LiveMessage } from '../lib/liveSync'
+import { VideoPlayerContainer } from '../components/VideoPlayerContainer'
 import teacherSpeakingSrc from '../assets/teacher_speaking.jpg'
 import teacherListeningSrc from '../assets/teacher_listening.jpg'
 
@@ -59,6 +60,8 @@ export default function LiveClassTeacher() {
   const [activeTab, setActiveTab] = useState<'doubts' | 'students' | 'transcript' | 'simulation'>('doubts')
   const [showSidePanel, setShowSidePanel] = useState(true)
   const [cameraOn, setCameraOn] = useState(true)
+  const [teacherStream, setTeacherStream] = useState<MediaStream | null>(null)
+  const [showDrawerVideo, setShowDrawerVideo] = useState(true)
 
   // Audio In state
   const [asrEngine, setAsrEngine] = useState<'browser' | 'server'>('browser')
@@ -94,6 +97,7 @@ export default function LiveClassTeacher() {
         try {
           if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
             stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 360 }, audio: false })
+            setTeacherStream(stream)
             if (teacherVideoRef.current) {
               teacherVideoRef.current.srcObject = stream
               teacherVideoRef.current.play().catch(() => {})
@@ -104,6 +108,7 @@ export default function LiveClassTeacher() {
           setIsWebcamActive(false)
         }
       } else {
+        setTeacherStream(null)
         if (teacherVideoRef.current && teacherVideoRef.current.srcObject) {
           const s = teacherVideoRef.current.srcObject as MediaStream
           s.getTracks().forEach((t) => t.stop())
@@ -580,16 +585,29 @@ export default function LiveClassTeacher() {
         {/* Left: Host Presentation & Video Canvas */}
         <div className="flex-1 p-3 sm:p-5 flex flex-col min-w-0">
           <div className="relative w-full flex-1 rounded-2xl overflow-hidden bg-slate-900 border border-slate-800/80 shadow-2xl flex flex-col">
-            {/* Hidden Video element for webcam capture */}
-            <video ref={teacherVideoRef} autoPlay playsInline muted className="hidden" />
+            {/* Primary Host Video Player Container (Primary Panel on Left/Top) */}
+            <div className="relative w-full flex-1 min-h-[340px]">
+              <VideoPlayerContainer
+                placement="primary"
+                isTeacherStreaming={true}
+                teacherName={user?.full_name || 'Dr. Ramesh Sharma'}
+                currentSpeech={speechInput || transcriptFeed[0]?.text || ''}
+                translatedSpeech={transcriptFeed[0]?.text || ''}
+                selectedLanguageName="English (Host)"
+                syncDelayMs={0}
+                isDelayEnabled={false}
+                mediaStream={teacherStream}
+                videoTrack={teacherStream?.getVideoTracks()[0]}
+                audioLevel={audioLevel}
+                isHost={true}
+                cameraOn={cameraOn}
+                containerTitle="Teacher Broadcast Feed"
+              />
+            </div>
 
-            {/* Whiteboard / Presentation Canvas */}
-            <canvas
-              ref={teacherCanvasRef}
-              width={720}
-              height={420}
-              className="w-full flex-1 object-cover"
-            />
+            {/* Hidden capture elements maintaining background frame broadcast loop */}
+            <video ref={teacherVideoRef} autoPlay playsInline muted className="hidden" />
+            <canvas ref={teacherCanvasRef} width={720} height={420} className="hidden" />
 
             {/* Quick Broadcast Bar directly under video */}
             <div className="bg-slate-950/95 border-t border-slate-800 p-3 flex gap-2 items-center">
@@ -811,11 +829,41 @@ export default function LiveClassTeacher() {
 
             {/* TAB 3: SPOKEN TRANSCRIPT FEED */}
             {activeTab === 'transcript' && (
-              <div className="flex-1 p-4 flex flex-col overflow-hidden">
-                <div className="flex items-center justify-between mb-3 pb-2 border-b border-slate-800">
-                  <span className="text-xs font-bold text-slate-300">Spoken Broadcast Transcript</span>
-                  <span className="text-[11px] text-slate-500 font-mono">{transcriptFeed.length} sent</span>
+              <div className="flex-1 p-3 sm:p-4 flex flex-col overflow-hidden">
+                <div className="flex items-center justify-between mb-2 pb-2 border-b border-slate-800">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs font-bold text-slate-300">Broadcast Transcripts</span>
+                    <span className="text-[10px] text-slate-500 font-mono">({transcriptFeed.length})</span>
+                  </div>
+                  <button
+                    onClick={() => setShowDrawerVideo(!showDrawerVideo)}
+                    className="text-[10px] font-bold text-primary-400 hover:text-primary-300 flex items-center gap-1 bg-slate-800/80 px-2 py-0.5 rounded transition"
+                    title="Toggle docked video feed container"
+                  >
+                    <span>{showDrawerVideo ? '▲ Hide Video' : '▼ Show Video'}</span>
+                  </button>
                 </div>
+
+                {/* Video Player Container docked directly above transcript history */}
+                {showDrawerVideo && (
+                  <div className="w-full flex-shrink-0">
+                    <VideoPlayerContainer
+                      placement="drawer"
+                      isTeacherStreaming={true}
+                      teacherName={user?.full_name || 'Dr. Ramesh Sharma'}
+                      currentSpeech={speechInput || transcriptFeed[0]?.text || ''}
+                      translatedSpeech={transcriptFeed[0]?.text || ''}
+                      selectedLanguageName="English (Host)"
+                      syncDelayMs={0}
+                      isDelayEnabled={false}
+                      mediaStream={teacherStream}
+                      videoTrack={teacherStream?.getVideoTracks()[0]}
+                      audioLevel={audioLevel}
+                      isHost={true}
+                      containerTitle="Live Broadcast Preview"
+                    />
+                  </div>
+                )}
 
                 <div className="flex-1 overflow-y-auto space-y-2 pr-1 text-xs">
                   {transcriptFeed.map((item, idx) => (
