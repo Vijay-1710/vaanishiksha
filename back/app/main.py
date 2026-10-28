@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from app.config import settings
 from app.database import engine, Base
+from app.middleware import SecurityHeadersMiddleware
 from app.routers import auth, lectures, users, worksheets, ncert, live
 import os
 
@@ -21,6 +22,9 @@ app = FastAPI(
     description="Breaking language barriers in primary education",
     version="0.1.0"
 )
+
+# Security and Observability Middleware
+app.add_middleware(SecurityHeadersMiddleware)
 
 # CORS middleware
 app.add_middleware(
@@ -41,7 +45,6 @@ app.include_router(lectures.router, prefix="/api/lectures", tags=["Lectures"])
 app.include_router(worksheets.router, prefix="/api/worksheets", tags=["Worksheets"])
 app.include_router(ncert.router, prefix="/api/ncert", tags=["NCERT Curriculum"])
 app.include_router(live.router, prefix="/api/live", tags=["Live Class"])
-
 
 
 @app.get("/")
