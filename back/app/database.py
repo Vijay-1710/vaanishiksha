@@ -6,15 +6,21 @@ from app.config import settings
 connect_args = {}
 if settings.database_url.startswith("sqlite"):
     connect_args["check_same_thread"] = False
+    # Set timeout in SQLite connection args as well
+    connect_args["timeout"] = 15
 
 engine = create_engine(settings.database_url, connect_args=connect_args)
 
-# Enable foreign keys for SQLite
+# Optimize SQLite pragmas for high concurrency and safety
 if settings.database_url.startswith("sqlite"):
     @event.listens_for(engine, "connect")
     def set_sqlite_pragma(dbapi_connection, connection_record):
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA busy_timeout=5000")
+        cursor.execute("PRAGMA cache_size=-64000")
         cursor.close()
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -28,4 +34,3 @@ def get_db():
         yield db
     finally:
         db.close()
-
