@@ -7,7 +7,15 @@ export interface LiveMessage {
   senderId: string
   senderName: string
   senderRole: 'teacher' | 'student'
-  type: 'teacher_speech' | 'student_doubt' | 'student_join' | 'teacher_answer' | 'class_ended' | 'teacher_video_frame'
+  type:
+    | 'teacher_speech'
+    | 'student_doubt'
+    | 'student_join'
+    | 'teacher_answer'
+    | 'class_ended'
+    | 'teacher_video_frame'
+    | 'synced_media_packet'
+    | 'video_delay_update'
   payload: any
   timestamp: number
 }

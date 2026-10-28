@@ -79,3 +79,5 @@ scripts/test_sample.mp3
 !frontend/src/lib/
 !frontend/src/lib/**
 
+
+*.code-workspace

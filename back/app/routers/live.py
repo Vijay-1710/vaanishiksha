@@ -27,6 +27,8 @@ from app.services.translation_service import translate_text
 from app.services.tts_service import text_to_speech, get_tts_audio_bytes
 from app.services.asr_service import transcribe_audio, transcribe_audio_bytes
 from app.services.worksheet_service import create_or_get_worksheet
+from app.services.video_sync_buffer import VideoSyncBuffer, VideoFrame
+from app.services.speech_worker import SpeechTranslationWorker
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -59,6 +61,8 @@ class LiveClassManager:
         self.rooms: Dict[str, Dict[str, Any]] = {}
         self.teacher_sockets: Dict[str, WebSocket] = {}
         self.student_sockets: Dict[str, List[Dict[str, Any]]] = {}
+        self.video_buffers: Dict[str, VideoSyncBuffer] = {}
+        self.speech_workers: Dict[str, SpeechTranslationWorker] = {}
 
     def create_room(
         self,
@@ -91,8 +95,19 @@ class LiveClassManager:
             "qa_history": [],
             "created_at": datetime.utcnow().isoformat(),
             "is_active": True,
+            "enable_live_translation": True,
         }
         self.student_sockets[room_code] = []
+
+        # Initialize synchronized video ring buffer and speech worker queue
+        self.video_buffers[room_code] = VideoSyncBuffer(max_capacity=300)
+        worker = SpeechTranslationWorker(
+            room_code=room_code,
+            on_result_callback=self._handle_speech_worker_result,
+        )
+        worker.start()
+        self.speech_workers[room_code] = worker
+
         logger.info(f"Created live classroom: {room_code} by {teacher_name}")
         return room_code
 
@@ -160,11 +175,102 @@ class LiveClassManager:
             except Exception:
                 pass
 
+    async def _handle_speech_worker_result(self, result: Dict[str, Any]):
+        """
+        Receives asynchronously processed speech chunks from the SpeechTranslationWorker,
+        retrieves the matching delayed video frame from VideoSyncBuffer, and simultaneously
+        broadcasts synchronized media packets to students.
+        """
+        room_code = result["room_code"]
+        room = self.get_room(room_code)
+        if not room or not room.get("is_active"):
+            return
+
+        original_text = result["original_text"]
+        source_lang = result["source_lang"]
+        translations = result["translations"]
+        telemetry = result["telemetry"]
+        pacing_rate = result.get("pacing_rate", 1.0)
+        recommended_delay = telemetry.get("recommended_video_delay_ms", 1800.0)
+        is_translation_enabled = room.get("enable_live_translation", True)
+
+        # Retrieve synchronized delayed video frame from in-memory ring buffer
+        video_buf = self.video_buffers.get(room_code)
+        delayed_frame: Optional[VideoFrame] = None
+        if video_buf:
+            if is_translation_enabled:
+                delayed_frame = video_buf.get_delayed_frame(video_delay_ms=recommended_delay)
+            else:
+                delayed_frame = video_buf.get_latest_frame()
+
+        frame_data = delayed_frame.frame_data if delayed_frame else None
+        frame_pts = delayed_frame.pts_ms if delayed_frame else result.get("pts_ms")
+        timestamp = datetime.utcnow().strftime("%H:%M:%S")
+
+        # 1. Update live transcript history with telemetry
+        room["transcript_history"].append({
+            "speaker": "teacher",
+            "text": original_text,
+            "source_lang": source_lang,
+            "translations": translations,
+            "timestamp": timestamp,
+            "telemetry": telemetry,
+        })
+
+        # 2. Acknowledge back to teacher socket with latency telemetry
+        teacher_ws = self.teacher_sockets.get(room_code)
+        if teacher_ws:
+            try:
+                await teacher_ws.send_json({
+                    "type": "speech_ack",
+                    "text": original_text,
+                    "timestamp": timestamp,
+                    "telemetry": telemetry,
+                    "pacing_rate": pacing_rate,
+                })
+            except Exception:
+                pass
+
+        # 3. Synchronized egress release to students
+        students = self.student_sockets.get(room_code, [])
+        for s in list(students):
+            ws = s["ws"]
+            lang = s["info"].get("language", "hi")
+            translated = translations.get(lang, original_text)
+            audio_url = f"/api/live/tts?language={lang}&text={urllib.parse.quote(translated)}"
+            try:
+                # Standard caption for 100% backward compatibility
+                await ws.send_json({
+                    "type": "live_caption",
+                    "original_text": original_text,
+                    "translated_text": translated,
+                    "target_language": lang,
+                    "audio_url": audio_url,
+                    "timestamp": timestamp,
+                })
+                # Synchronized media packet
+                await ws.send_json({
+                    "type": "synced_media_packet",
+                    "original_text": original_text,
+                    "translated_text": translated,
+                    "target_language": lang,
+                    "audio_url": audio_url,
+                    "frame": frame_data,
+                    "pts_ms": frame_pts,
+                    "pacing_rate": pacing_rate,
+                    "processing_latency_ms": telemetry.get("processing_latency_ms", 1800.0),
+                    "video_delay_ms": recommended_delay if is_translation_enabled else 0.0,
+                    "enable_live_translation": is_translation_enabled,
+                    "timestamp": timestamp,
+                })
+            except Exception:
+                pass
+
     async def broadcast_speech(self, room_code: str, raw_text: str, source_lang: str):
         """
         Receives speech transcribed from the teacher, translates on-the-fly for
         each student's unique language preference, and sends live translated captions
-        along with audio playback triggers.
+        along with audio playback triggers and synchronized video packets.
         """
         room = self.get_room(room_code)
         if not room:
@@ -212,13 +318,32 @@ class LiveClassManager:
             except Exception:
                 pass
 
-        # 5. Broadcast to each student in their exact target language with speech audio url
+        # 5. Query delayed video frame from in-memory ring buffer
+        is_translation_enabled = room.get("enable_live_translation", True)
+        video_buf = self.video_buffers.get(room_code)
+        delayed_frame: Optional[VideoFrame] = None
+        if video_buf:
+            delayed_frame = (
+                video_buf.get_delayed_frame(video_delay_ms=1800.0)
+                if is_translation_enabled
+                else video_buf.get_latest_frame()
+            )
+        frame_data = delayed_frame.frame_data if delayed_frame else None
+        frame_pts = delayed_frame.pts_ms if delayed_frame else None
+
+        # 6. Broadcast to each student in their exact target language with speech audio url & synced media packet
         for student_entry in list(students):
             ws = student_entry["ws"]
             lang = student_entry["info"].get("language", "en")
             student_translated = translations.get(lang, text)
             audio_url = f"/api/live/tts?language={lang}&text={urllib.parse.quote(student_translated)}"
+
+            # Pacing adjustment calculation for speech expansion/contraction (>15%)
+            word_ratio = len(student_translated.split()) / max(1, len(text.split()))
+            pacing_rate = round(max(0.85, min(1.25, word_ratio)), 2) if abs(word_ratio - 1.0) > 0.15 else 1.0
+
             try:
+                # Standard live_caption for 100% backward compatibility with legacy consumers
                 await ws.send_json({
                     "type": "live_caption",
                     "original_text": text,
@@ -227,6 +352,24 @@ class LiveClassManager:
                     "audio_url": audio_url,
                     "timestamp": timestamp,
                 })
+
+                # Synchronized media packet with PTS & delayed video frame when video streaming is active
+                has_video = (video_buf is not None and len(video_buf._buffer) > 0) or frame_data is not None
+                if has_video:
+                    await ws.send_json({
+                        "type": "synced_media_packet",
+                        "original_text": text,
+                        "translated_text": student_translated,
+                        "target_language": lang,
+                        "audio_url": audio_url,
+                        "frame": frame_data,
+                        "pts_ms": frame_pts,
+                        "pacing_rate": pacing_rate,
+                        "processing_latency_ms": 1600.0,
+                        "video_delay_ms": 1800.0 if is_translation_enabled else 0.0,
+                        "enable_live_translation": is_translation_enabled,
+                        "timestamp": timestamp,
+                    })
             except Exception as e:
                 logger.debug(f"Failed to send to student socket: {e}")
 
@@ -355,6 +498,18 @@ class LiveClassManager:
                 await s["ws"].send_json(end_payload)
             except Exception:
                 pass
+
+        # Stop speech worker and flush video buffer
+        worker = self.speech_workers.get(room_code)
+        if worker:
+            try:
+                await worker.stop()
+            except Exception:
+                pass
+            self.speech_workers.pop(room_code, None)
+
+        if room_code in self.video_buffers:
+            self.video_buffers.pop(room_code, None)
 
         logger.info(f"Live class {room_code} archived as Lecture ID={lecture.id}")
         return lecture
@@ -558,6 +713,22 @@ async def teacher_websocket(websocket: WebSocket, room_code: str):
                 if audio_base64:
                     try:
                         raw_bytes = base64.b64decode(audio_base64)
+                        # Feed into decoupled speech worker queue for async processing
+                        worker = live_manager.speech_workers.get(room_code)
+                        if worker:
+                            target_langs = [
+                                s["info"].get("language", "hi")
+                                for s in live_manager.student_sockets.get(room_code, [])
+                            ]
+                            if not target_langs:
+                                target_langs = ["hi"]
+                            await worker.enqueue_audio_chunk(
+                                audio_bytes=raw_bytes,
+                                source_lang=source_lang,
+                                target_languages=target_langs,
+                                file_ext=format_ext,
+                            )
+
                         recognized = transcribe_audio_bytes(raw_bytes, file_ext=format_ext, language=source_lang)
                         if recognized and recognized.strip():
                             await live_manager.broadcast_speech(room_code, recognized.strip(), source_lang)
@@ -572,6 +743,25 @@ async def teacher_websocket(websocket: WebSocket, room_code: str):
                             "type": "error",
                             "message": f"Audio processing error: {str(e)}",
                         })
+
+            elif msg_type == "video_frame":
+                # Teacher streamed a video frame (base64 or JPEG data url)
+                frame_data = data.get("frame") or data.get("frame_data")
+                pts_ms = data.get("pts_ms") or data.get("timestamp")
+                is_keyframe = data.get("is_keyframe", False)
+                video_buf = live_manager.video_buffers.get(room_code)
+                if video_buf and frame_data:
+                    video_buf.push_frame(frame_data, pts_ms=pts_ms, is_keyframe=is_keyframe)
+
+            elif msg_type == "toggle_translation":
+                # Teacher toggles real-time delayed video translation pipeline
+                enabled = bool(data.get("enabled", True))
+                if room:
+                    room["enable_live_translation"] = enabled
+                    await websocket.send_json({
+                        "type": "translation_toggled",
+                        "enabled": enabled,
+                    })
 
             elif msg_type == "ping":
                 await websocket.send_json({"type": "pong"})
